@@ -46,3 +46,13 @@ executable ext-stg
                        bytestring,
                        optparse-applicative
   default-language:    Haskell2010
+  
+executable ext-stg-mlir
+  hs-source-dirs:      appmlir
+  main-is:             ext-stg.hs
+  build-depends:       base < 5.0,
+                       external-stg,
+                       prettyprinter,
+                       bytestring,
+                       optparse-applicative
+  default-language:    Haskell2010
