@@ -3,7 +3,6 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE Rank2Types #-}
 module MLIR where
-import qualified Data.List.NonEmpty as NE
 import Prettyprinter
 
 -- parenthesis: smooth sounds -> smooth curve -> ()
@@ -57,8 +56,7 @@ instance Pretty RegionList where
   pretty (RegionList []) = mempty
   pretty (RegionList rs) = parens (commaList (map pretty rs))
 
--- block           ::= block-label operation+
-data Block = Block BlockLabel (NE.NonEmpty Operation)
+data Block = Block BlockLabel [Operation]
 
 instance Pretty Block where
     pretty _ = error "unimplemented pretty for block"
@@ -201,10 +199,10 @@ defaultFunctionType :: FunctionType; defaultFunctionType = FunctionType [] []
 --                  unsigned-integer-type |
 --                  signless-integer-type
 -- 
-data Type = TypeDialect DialectNamespace String
+data Type = TypeCustom String
     | TypeIntegerSignless Int  -- ^ width
 instance Pretty Type where
-  pretty (TypeDialect ns x) = pretty ns  <> angles (pretty x)
+  pretty (TypeCustom s) = pretty s
   pretty (TypeIntegerSignless i) = pretty 'i' <> pretty i
 
 -- | successor-list    ::= successor (`,` successor)*
@@ -265,4 +263,9 @@ instance Pretty DialectNamespace where
 data DialectType = DialectType  DialectNamespace String
 
 -- Doc :: Doc -> String
+data MLIRModule = MLIRModule {
+  ops :: [Operation]
+}
 
+instance Pretty MLIRModule where
+  pretty (MLIRModule ops) = pretty "module {" <+> vcat (map pretty ops) <+> pretty "}"
