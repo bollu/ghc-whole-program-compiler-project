@@ -96,6 +96,8 @@ type AttributeName = String
 data AttributeDict = AttributeDict [(AttributeName, AttributeValue)] 
   deriving(Monoid, Semigroup)
 
+
+
 -- generic-operation ::= string-literal `(` value-use-list? `)`  successor-list?
 --                       (`(` region-list `)`)? attribute-dict? `:` function-type
 instance Pretty AttributeDict where
@@ -123,6 +125,8 @@ data AttributeValue = AttributeSymbolRef SymbolRefId |
                       AttributeInteger Integer | 
                       AttributeType Type 
 
+attributeSymbolRef :: String -> AttributeValue
+attributeSymbolRef s = AttributeSymbolRef (SymbolRefId s)
 
 instance Pretty AttributeValue where
   pretty (AttributeSymbolRef x) = pretty x
@@ -134,9 +138,16 @@ instance Pretty AttributeValue where
 --                       trailing-location?
 -- generic-operation ::= string-literal `(` value-use-list? `)`  successor-list?
 --                       (`(` region-list `)`)? attribute-dict? `:` function-type
+newtype OpResultList =  OpResultList [OpResult]
+instance Pretty OpResultList where
+   pretty (OpResultList []) = mempty
+   pretty (OpResultList [x]) = pretty x <> pretty " = "
+   pretty (OpResultList xs) = (parens (commaList (map pretty xs))) <> pretty " = " 
+
 data Operation = 
   Operation { opname :: String, 
               opvals :: ValueUseList, 
+              opresults :: OpResultList,
               opsuccs :: SuccessorList, 
               opregions :: RegionList,
               opattrs :: AttributeDict,
@@ -145,6 +156,7 @@ data Operation =
 
 instance Pretty Operation where
   pretty op = 
+       pretty (opresults op) <>
        dquotes (pretty (opname op)) <> 
        parens (pretty (opvals op)) <>
        pretty (opsuccs op) <>
@@ -154,7 +166,15 @@ instance Pretty Operation where
 
 -- | default operation.
 defaultop :: Operation
-defaultop = Operation "DEFAULTOP" (ValueUseList []) SuccessorList (RegionList [])  (AttributeDict []) defaultFunctionType
+defaultop = Operation {
+   opname="DEFAULTOP",
+   opvals=(ValueUseList []),
+   opresults=OpResultList [],
+   opsuccs=SuccessorList,
+   opregions=(RegionList []),
+   opattrs=(AttributeDict []),
+   opty=defaultFunctionType
+  }
 
 
 commaList :: [Doc ann] -> Doc ann
@@ -211,9 +231,8 @@ instance Pretty SuccessorList where
   pretty (SuccessorList) = mempty
 -- custom-operation  ::= bare-id custom-operation-format
 -- op-result-list    ::= op-result (`,` op-result)* `=`
-newtype OpResultList = NonEmpty OpResult
 -- op-result         ::= value-id (`:` integer-literal)
-newtype OpResult = OpResult String -- TODO: add the maybe int to pick certain results out
+type OpResult = SSAId -- TODO: add the maybe int to pick certain results out
 -- successor-list    ::= successor (`,` successor)*
 -- successor         ::= caret-id (`:` bb-arg-list)?
 -- region-list       ::= region (`,` region)*

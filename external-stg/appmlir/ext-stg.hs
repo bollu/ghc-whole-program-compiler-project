@@ -20,6 +20,24 @@ import Stg.Syntax
 import Stg.IO
 
 
+codegenPrimRep :: PrimRep -> MLIR.Type
+codegenPrimRep VoidRep = error "cannot codegen void type"
+codegenPrimRep Int8Rep = TypeIntegerSignless 8
+codegenPrimRep Int16Rep = TypeIntegerSignless 16
+codegenPrimRep Int32Rep = TypeIntegerSignless 32
+codegenPrimRep Int64Rep = TypeIntegerSignless 64
+codegenPrimRep IntRep = TypeIntegerSignless 64
+codegenPrimRep rep = error "unhandled primrep"
+
+lzvaluetype :: MLIR.Type
+lzvaluetype = MLIR.TypeCustom ("!hask.value")
+
+codegenType :: Stg.Syntax.Type -> MLIR.Type
+codegenType (SingleValue primrep) = codegenPrimRep primrep
+codegenType (UnboxedTuple primreps) = error "cannot codegen unboxed tuple type"
+codegenType (PolymorphicRep) = lzvaluetype
+codegenType t = error "unknown type"
+
 haskreturnop :: (MLIR.SSAId, MLIR.Type) -> MLIR.Operation
 haskreturnop (retv, rett) = MLIR.defaultop {
        MLIR.opname = "hask.return", 
@@ -27,13 +45,16 @@ haskreturnop (retv, rett) = MLIR.defaultop {
        MLIR.opty = MLIR.FunctionType [rett] [rett] 
   }
 
-haskvalty :: MLIR.Type
-haskvalty = MLIR.TypeCustom ("!hask.value")
 
-data GenMState = GenMState
-initGenMState :: GenMState; initGenMState = GenMState
+data GenMState = GenMState { genmuuid :: Int }
+initGenMState :: GenMState; initGenMState = GenMState 0
 
 data GenM a = GenM { runGenM :: GenMState -> (a, GenMState) }
+
+
+gensymSSAId :: GenM SSAId
+gensymSSAId = 
+  GenM $ \(GenMState uuid) -> (SSAId (show uuid), GenMState (uuid + 1))
 
 instance Monad GenM where
    return a = GenM $ \s -> (a, s)
@@ -53,8 +74,12 @@ instance Functor GenM where
 
 
 -- | convert a name to a string
-name2String :: Binder -> String
-name2String = BS8.unpack . binderUniqueName 
+binder2String :: Binder -> String
+binder2String = BS8.unpack . binderUniqueName 
+
+
+name2String :: Name -> String
+name2String = BS8.unpack
 
 -- | helper to create BBs
 block :: String -- ^ BB name
@@ -64,11 +89,55 @@ block :: String -- ^ BB name
 block name _ []= error $ "empty list passed to: " ++ name
 block name args ops = Block (BlockLabel (BlockId name) args) ops
 
+constantop :: SSAId -> AttributeValue -> MLIR.Type -> Operation
+constantop out v t = MLIR.defaultop {
+  opname ="std.contant",
+  opattrs=AttributeDict[("value", v)],
+  opty=FunctionType [] [t],
+  opresults=OpResultList [out]
+}
+
+constructop :: SSAId -- return ID
+   -> String -- constructor name
+   -> [SSAId] -- argument IDs 
+   -> [MLIR.Type] -- argument types
+   -> Operation -- final operation
+constructop out name argvs argtys = MLIR.defaultop {
+  opname="lz.construct",
+  opvals=ValueUseList argvs,
+  opty=FunctionType argtys [lzvaluetype],
+  opattrs=AttributeDict[("value", attributeSymbolRef name)],
+  opresults=OpResultList [out]
+}                     
+
+codegenArg :: Arg -> GenM ([Operation], SSAId)
+codegenArg (StgVarArg vbinder) = return ([], SSAId $ binder2String vbinder)
+codegenArg (StgLitArg (LitNumber LitNumInt i)) = do 
+  newid <- gensymSSAId
+  return ([constantop newid (AttributeInteger i) (TypeIntegerSignless 64)], newid)
+
+codegenArg (StgLitArg (LitNumber LitNumInt64 i)) = do
+  newid <- gensymSSAId
+  return ([constantop newid (AttributeInteger i) (TypeIntegerSignless 64)], newid)
+
+codegenArg (StgLitArg (LitNumber LitNumWord i)) = error "unhandled literal"
+codegenArg (StgLitArg (LitNumber LitNumWord64 i)) = error "unhandled literal"
+codegenArg (StgLitArg _) = error "unhandled literal"
 
 codegenExpr :: Expr -> GenM ([Operation], SSAId)
 codegenExpr (StgApp fn args resty _) = error $ "ap"
 codegenExpr (StgLit lit) = error $ "lit"
-codegenExpr (StgConApp constructor args argtys) = error $ "constructor"
+codegenExpr (StgConApp datacon args argtys) = do
+  -- [([operation, SSAId])
+  argCode <- forM args codegenArg
+  let argIds = [id | (_, id) <- argCode]
+  let argops = mconcat [ops | (ops, _) <- argCode]
+  newid <- gensymSSAId
+  let construct = constructop newid (name2String (dcName datacon)) argIds (map codegenType argtys)
+  return (argops ++ [construct], newid)
+
+  
+
 codegenExpr (StgOpApp stgop args resty idontknow_result_type_nme) = error $ "opap"
 codegenExpr (StgCase exprscrutinee  resultName altType altsDefaultFirst) = error $ "stgcase"
 codegenExpr (StgLet binding body) = error $ "let"
@@ -78,7 +147,7 @@ codegenExpr e = error $ "unknown expression"
 translateRhs :: String -> Rhs -> GenM [Operation]
 translateRhs name (StgRhsClosure updflag args exprbody) = do
   (ops, finalval) <- codegenExpr exprbody
-  let entry = block "entry"  [] (ops ++ [haskreturnop (finalval, haskvalty)])
+  let entry = block "entry"  [] (ops ++ [haskreturnop (finalval, lzvaluetype)])
   let r = MLIR.Region [entry]
   -- let r = MLIR.Region []
   return $ [MLIR.defaultop { 
@@ -86,6 +155,7 @@ translateRhs name (StgRhsClosure updflag args exprbody) = do
        MLIR.opattrs = MLIR.AttributeDict [("sym_name", MLIR.AttributeString name)],
        MLIR.opregions = MLIR.RegionList [r]
   }]
+
 translateRhs name (StgRhsCon datacon args) = return []
   -- return $ MLIR.defaultop { 
   --      MLIR.opname = "hask.datacon", 
@@ -97,9 +167,9 @@ translateRhs name (StgRhsCon datacon args) = return []
 
 translateTopBinding :: TopBinding -> GenM [Operation]
 translateTopBinding (StgTopLifted (StgNonRec name rhs)) = 
-  translateRhs (name2String name) rhs
+  translateRhs (binder2String name) rhs
 translateTopBinding (StgTopLifted (StgRec bindings)) = do
-  ops <- mconcat <$> forM  bindings (\(n, rhs) -> translateRhs (name2String n) rhs)
+  ops <- mconcat <$> forM  bindings (\(n, rhs) -> translateRhs (binder2String n) rhs)
   return ops
 translateTopBinding (StgTopStringLit _ _) =  do
   return []
