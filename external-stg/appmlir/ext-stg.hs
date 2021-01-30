@@ -1,11 +1,11 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE ParallelListComp #-}
 -- https://github.com/bollu/coremlir/blob/master/core2MLIR/Core2MLIR/ConvertToMLIR.hs
-
 import Control.Monad
 import Data.Maybe
 import Data.List (sortBy)
-import Data.Monoid
+import Data.Monoid (mconcat, (<>), mempty)
 import Data.Ord
 
 import MLIR
@@ -110,36 +110,143 @@ constructop out name argvs argtys = MLIR.defaultop {
   opresults=OpResultList [out]
 }                     
 
+
+codegenLit :: Lit -> (AttributeValue, MLIR.Type)
+codegenLit (LitNumber LitNumInt i) = (AttributeInteger i, TypeIntegerSignless 64)
+codegenLit (LitNumber LitNumInt64 i) = (AttributeInteger i, TypeIntegerSignless 64)
+codegenLit (LitNumber LitNumWord i) = error "unhandled literal"
+codegenLit (LitNumber LitNumWord64 i) = error "unhandled literal"
+
 codegenArg :: Arg -> GenM ([Operation], SSAId)
 codegenArg (StgVarArg vbinder) = return ([], SSAId $ binder2String vbinder)
-codegenArg (StgLitArg (LitNumber LitNumInt i)) = do 
+codegenArg (StgLitArg l) = do
   newid <- gensymSSAId
-  return ([constantop newid (AttributeInteger i) (TypeIntegerSignless 64)], newid)
+  let (val, ty) = codegenLit l
+  return ([constantop newid val ty], newid)
 
-codegenArg (StgLitArg (LitNumber LitNumInt64 i)) = do
+codegenTycon :: TyCon -> MLIR.Type
+codegenTycon tycon = MLIR.TypeCustom ("!lz.value")
+
+
+forceop :: SSAId -- return ID
+  -> SSAId -- input ID
+  -> MLIR.Type -- input type
+  -> Operation
+forceop retid argid argty = MLIR.defaultop {
+  opname="lz.force",
+  opvals=ValueUseList [argid],
+  opty=FunctionType [argty] [lzvaluetype],
+  opresults=OpResultList [retid]
+}                                    
+  
+-- | Generate the appropriate force for the case at hand
+codegenCaseScrutineeForce :: AltType
+  -> SSAId -- scrutinee
+  -> GenM ([Operation], SSAId)
+codegenCaseScrutineeForce PolyAlt argid = error $ "unknown alt type polyalt"
+codegenCaseScrutineeForce (PrimAlt prim) argid = return ([], argid) 
+codegenCaseScrutineeForce (AlgAlt tycon) argid = do
   newid <- gensymSSAId
-  return ([constantop newid (AttributeInteger i) (TypeIntegerSignless 64)], newid)
+  let force = forceop newid argid (codegenTycon tycon)
+  return ([force], newid)
 
-codegenArg (StgLitArg (LitNumber LitNumWord i)) = error "unhandled literal"
-codegenArg (StgLitArg (LitNumber LitNumWord64 i)) = error "unhandled literal"
-codegenArg (StgLitArg _) = error "unhandled literal"
 
-codegenExpr :: Expr -> GenM ([Operation], SSAId)
-codegenExpr (StgApp fn args resty _) = error $ "ap"
-codegenExpr (StgLit lit) = error $ "lit"
-codegenExpr (StgConApp datacon args argtys) = do
-  -- [([operation, SSAId])
+codegenAltLHS :: AltCon -> AttributeValue
+codegenAltLHS (AltLit lit) =  let (val, ty) = codegenLit lit in val
+codegenAltLHS (AltDataCon dc) = attributeSymbolRef . name2String . dcName $ dc
+codegenAltLHS (AltDefault) = attributeSymbolRef "default"
+
+-- https://github.com/bollu/coremlir/blob/master/core2MLIR/Core2MLIR/ConvertToMLIR.hs#L203
+-- given an alt, generate the alt LHS, and the region RHS
+codegenAlt :: Alt -> GenM (AttributeValue, Region)
+codegenAlt (Alt altcon altbndrs rhs) = do
+  let params = map (SSAId . binder2String) altbndrs
+  let paramtys = map (codegenType . binderType) altbndrs
+  (rhsops, retval) <- codegenExpr rhs
+  let entry = block "entry"  (zip params paramtys) (rhsops ++ [haskreturnop (retval, lzvaluetype)])
+  let r = MLIR.Region [entry]
+  return (codegenAltLHS altcon, r)
+  
+caseop :: SSAId -- ^ return value
+    -> SSAId -- ^ scrutinee value
+    -> [(AttributeValue, Region)] -- ^ alt LHS, alt RHS
+    -> Operation
+caseop out scrutinee alts = MLIR.defaultop {
+  opname="lz.case",
+  opvals=ValueUseList [scrutinee] ,
+  opty=FunctionType [lzvaluetype] [lzvaluetype],
+  opattrs=AttributeDict [("value" <> show ix, lhs)  | ix <- [1..]  | (lhs, _) <- alts],
+  opregions=RegionList (map snd alts),
+  opresults=OpResultList [out]
+}                     
+
+
+-- | helper for codegen arg
+codegenArgs :: [Arg] -> GenM ([Operation], [SSAId])
+codegenArgs args = do
+  -- | [([Operation, SSAId]]
   argCode <- forM args codegenArg
   let argIds = [id | (_, id) <- argCode]
   let argops = mconcat [ops | (ops, _) <- argCode]
+  return (argops, argIds)
+
+fnref :: Binder -> GenM ([Operation], SSAId)
+fnref binder = do 
+  newid <- gensymSSAId
+  let name = (attributeSymbolRef . binder2String $ binder)
+  let ty = codegenType (binderType binder)
+  -- | what to do if this a local function? x(
+  -- | FML?
+  -- TODO: ask Csaba to easily test if this is a lambda bound or some such,
+  -- or an actual global
+  -- TODO2: GHC doesn't perform lambda lifting, so where are the lambdas?
+  let op = constantop newid name ty
+  return ([op], newid)
+
+apop :: SSAId -- ^ new ID
+  -> SSAId -- ^ fn argument
+  -> [SSAId] -- ^ arguments
+  -> Operation
+apop out fn args = defaultop {
+  opname="lz.ap",
+  opvals=ValueUseList (fn:args),
+  opty=FunctionType [lzvaluetype] [lzvaluetype],
+  opresults=OpResultList [out]
+}
+
+codegenExpr :: Expr -> GenM ([Operation], SSAId)
+codegenExpr (StgApp fn args resty _) = do
+  (argops, argids) <- codegenArgs args
+  (fnrefops, fnrefid) <- fnref fn
+  newid <- gensymSSAId
+  let op = apop newid fnrefid argids
+  return $ (argops ++ fnrefops ++ [op], newid)
+codegenExpr (StgLit lit) = do
+  newid <- gensymSSAId
+  let (val, ty) = codegenLit lit
+  return ([constantop newid val ty], newid)
+  
+codegenExpr (StgConApp datacon args argtys) = do
+  -- [([operation, SSAId])
+  -- argCode <- forM args codegenArg
+  -- let argIds = [id | (_, id) <- argCode]
+  -- let argops = mconcat [ops | (ops, _) <- argCode]
+  (argops, argIds) <- codegenArgs args
   newid <- gensymSSAId
   let construct = constructop newid (name2String (dcName datacon)) argIds (map codegenType argtys)
   return (argops ++ [construct], newid)
 
-  
-
 codegenExpr (StgOpApp stgop args resty idontknow_result_type_nme) = error $ "opap"
-codegenExpr (StgCase exprscrutinee  resultName altType altsDefaultFirst) = error $ "stgcase"
+codegenExpr (StgCase exprscrutinee  resultName altType altsDefaultFirst) = do
+  (exprops, exprid) <- codegenExpr exprscrutinee
+  (forceops, scrutineeid) <- codegenCaseScrutineeForce altType exprid
+  altsLhssRhss <- forM altsDefaultFirst codegenAlt
+  newid <- gensymSSAId
+  let case_ = caseop newid scrutineeid altsLhssRhss
+  return (exprops ++ forceops ++ [case_], newid)
+
+  -- we need to replace 'resultName' with the output of the case
+
 codegenExpr (StgLet binding body) = error $ "let"
 codegenExpr (StgLetNoEscape binding body) = error $ "letNoEscape"
 codegenExpr e = error $ "unknown expression"

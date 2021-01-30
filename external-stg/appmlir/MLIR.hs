@@ -58,9 +58,12 @@ instance Pretty RegionList where
 
 data Block = Block BlockLabel [Operation]
 
+blankLine :: Doc ann
+blankLine = pretty "\n"
+
 instance Pretty Block where
-    pretty _ = error "unimplemented pretty for block"
-  
+   pretty (Block label ops) = vcat (map pretty ops)
+     -- vcat (pretty label) (hang 2 (vcat $ blankLine:map pretty ops))
   
 -- block-label     ::= block-id block-arg-list? `:`
 data BlockLabel = BlockLabel BlockId BlockArgList
