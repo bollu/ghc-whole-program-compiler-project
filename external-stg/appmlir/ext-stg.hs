@@ -1,6 +1,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ParallelListComp #-}
+{-# LANGUAGE OverloadedStrings #-}
 -- https://github.com/bollu/coremlir/blob/master/core2MLIR/Core2MLIR/ConvertToMLIR.hs
 import Control.Monad
 import Data.Maybe
@@ -19,6 +20,8 @@ import Stg.Syntax
 -- import Stg.Pretty
 import Stg.IO
 
+liftedreptype :: MLIR.Type
+liftedreptype = MLIR.TypeCustom ("!stg.liftedrep")
 
 codegenPrimRep :: PrimRep -> MLIR.Type
 codegenPrimRep VoidRep = error "cannot codegen void type"
@@ -27,10 +30,11 @@ codegenPrimRep Int16Rep = TypeIntegerSignless 16
 codegenPrimRep Int32Rep = TypeIntegerSignless 32
 codegenPrimRep Int64Rep = TypeIntegerSignless 64
 codegenPrimRep IntRep = TypeIntegerSignless 64
-codegenPrimRep rep = error "unhandled primrep"
+codegenPrimRep LiftedRep = liftedreptype
+codegenPrimRep rep = error $ "unhandled primrep: " <> show rep
 
 lzvaluetype :: MLIR.Type
-lzvaluetype = MLIR.TypeCustom ("!hask.value")
+lzvaluetype = MLIR.TypeCustom ("!lz.value")
 
 codegenType :: Stg.Syntax.Type -> MLIR.Type
 codegenType (SingleValue primrep) = codegenPrimRep primrep
@@ -214,6 +218,97 @@ apop out fn args = defaultop {
   opresults=OpResultList [out]
 }
 
+callop :: SSAId -- ^ new ID
+  -> SSAId -- ^ fn argument
+  -> [SSAId] -- ^ arguments
+  -> Operation
+callop out fn args = defaultop {
+  opname="std.call",
+  opvals=ValueUseList (fn:args),
+  opty=FunctionType [lzvaluetype] [lzvaluetype],
+  opresults=OpResultList [out]
+}
+
+addiop :: SSAId -- ^ new ID
+  -> [SSAId] -- ^ arguments
+  -> Operation
+addiop out args = defaultop {
+  opname="std.addi",
+  opvals=ValueUseList args,
+  opty=FunctionType [lzvaluetype] [lzvaluetype],
+  opresults=OpResultList [out]
+}
+
+subiop :: SSAId -- ^ new ID
+  -> [SSAId] -- ^ arguments
+  -> Operation
+subiop out args = defaultop {
+  opname="std.subi",
+  opvals=ValueUseList args,
+  opty=FunctionType [lzvaluetype] [lzvaluetype],
+  opresults=OpResultList [out]
+}
+
+muliop :: SSAId -- ^ new ID
+  -> [SSAId] -- ^ arguments
+  -> Operation
+muliop out args = defaultop {
+  opname="std.muli",
+  opvals=ValueUseList args,
+  opty=FunctionType [lzvaluetype] [lzvaluetype],
+  opresults=OpResultList [out]
+}
+
+-- | say that old id equals new id
+equalop :: SSAId -- ^ new ID
+  -> SSAId -- ^ old ID
+  -> Operation
+equalop out arg = defaultop {
+  opname="std.equal",
+  opvals=ValueUseList [arg],
+  opty=FunctionType [lzvaluetype] [lzvaluetype],
+  opresults=OpResultList [out]
+}
+
+
+codegenRhsInner :: SSAId -- out ID
+  -> Rhs
+  -> GenM([Operation])
+codegenRhsInner outid (StgRhsCon datacon args) = do
+  (argops, argIds) <- codegenArgs args
+  let tys = replicate (length args) lzvaluetype 
+  let construct = constructop outid (name2String (dcName datacon)) argIds tys
+  return (argops <> [construct])
+
+codegenRhsInner outid (StgRhsClosure updflags argbinders ebody) = do
+  (bodyops, bodyid) <- codegenExpr ebody
+  let args = [(SSAId $ binder2String arg, codegenType (binderType arg)) | arg <- argbinders]
+  let entry = block "entry"  args bodyops
+  --   (bodyops ++ [haskreturnop (bodyid, lzvaluetype)])
+  let r = MLIR.Region [entry]
+  -- -- (argops, argIds) <- codegenArgs args
+  let lam = defaultop {
+    opname="lz.lambda",
+    -- opvals=ValueUseList argIds,
+    opty=FunctionType [lzvaluetype] [lzvaluetype],
+    opregions=RegionList [r],
+    opresults=OpResultList [outid]
+  }
+  return []
+  -- return [lam]
+
+-- | let ...
+--    x = data constructor  <= binding
+--    y = lambda <= binding
+codegenInnerBinding :: Binding -> GenM ([Operation], SSAId)
+codegenInnerBinding (StgNonRec lhs rhs) = do
+  let lhsid = SSAId $ binder2String $ lhs
+  rhsops <- codegenRhsInner lhsid rhs
+  return (rhsops , lhsid) 
+
+
+-- | convert to destination passing style, where caller tells you
+-- name to store the result in.
 codegenExpr :: Expr -> GenM ([Operation], SSAId)
 codegenExpr (StgApp fn args resty _) = do
   (argops, argids) <- codegenArgs args
@@ -236,7 +331,22 @@ codegenExpr (StgConApp datacon args argtys) = do
   let construct = constructop newid (name2String (dcName datacon)) argIds (map codegenType argtys)
   return (argops ++ [construct], newid)
 
-codegenExpr (StgOpApp stgop args resty idontknow_result_type_nme) = error $ "opap"
+codegenExpr (StgOpApp stgop args resty idk_result_type_name) = do
+  (argops, argIds) <- codegenArgs args
+  case stgop of
+    StgPrimOp "+#" -> do
+       newid <- gensymSSAId
+       let op = addiop  newid argIds
+       return (argops <> [op], newid)
+    StgPrimOp "-#" -> do
+       newid <- gensymSSAId
+       let op = subiop  newid argIds
+       return (argops <> [op], newid)
+    StgPrimOp "*#" -> do
+       newid <- gensymSSAId
+       let op = muliop  newid argIds
+       return (argops <> [op], newid)
+    _ -> error $ "unimplemented stg op |" <> show stgop <> "|"
 codegenExpr (StgCase exprscrutinee  resultName altType altsDefaultFirst) = do
   (exprops, exprid) <- codegenExpr exprscrutinee
   (forceops, scrutineeid) <- codegenCaseScrutineeForce altType exprid
@@ -247,12 +357,16 @@ codegenExpr (StgCase exprscrutinee  resultName altType altsDefaultFirst) = do
 
   -- we need to replace 'resultName' with the output of the case
 
-codegenExpr (StgLet binding body) = error $ "let"
+codegenExpr (StgLet binding body) = do
+  (bindingops, bindingval) <- codegenInnerBinding binding
+  (bodyops, bodyval) <- codegenExpr body
+  return (bindingops <> bodyops, bodyval)
+
 codegenExpr (StgLetNoEscape binding body) = error $ "letNoEscape"
 codegenExpr e = error $ "unknown expression"
 
-translateRhs :: String -> Rhs -> GenM [Operation]
-translateRhs name (StgRhsClosure updflag args exprbody) = do
+codegenRhsToplevel :: String -> Rhs -> GenM [Operation]
+codegenRhsToplevel name (StgRhsClosure updflag args exprbody) = do
   (ops, finalval) <- codegenExpr exprbody
   let entry = block "entry"  [] (ops ++ [haskreturnop (finalval, lzvaluetype)])
   let r = MLIR.Region [entry]
@@ -263,7 +377,7 @@ translateRhs name (StgRhsClosure updflag args exprbody) = do
        MLIR.opregions = MLIR.RegionList [r]
   }]
 
-translateRhs name (StgRhsCon datacon args) = return []
+codegenRhsToplevel name (StgRhsCon datacon args) = return []
   -- return $ MLIR.defaultop { 
   --      MLIR.opname = "hask.datacon", 
   --      MLIR.opattrs = MLIR.AttributeDict [("sym_name", MLIR.AttributeString name)],
@@ -272,21 +386,21 @@ translateRhs name (StgRhsCon datacon args) = return []
   -- error $ "have not implemented translating rhs: |" <> name <> "|"
 
 
-translateTopBinding :: TopBinding -> GenM [Operation]
-translateTopBinding (StgTopLifted (StgNonRec name rhs)) = 
-  translateRhs (binder2String name) rhs
-translateTopBinding (StgTopLifted (StgRec bindings)) = do
-  ops <- mconcat <$> forM  bindings (\(n, rhs) -> translateRhs (binder2String n) rhs)
+codegenTopBinding :: TopBinding -> GenM [Operation]
+codegenTopBinding (StgTopLifted (StgNonRec name rhs)) = 
+  codegenRhsToplevel (binder2String name) rhs
+codegenTopBinding (StgTopLifted (StgRec bindings)) = do
+  ops <- mconcat <$> forM  bindings (\(n, rhs) -> codegenRhsToplevel (binder2String n) rhs)
   return ops
-translateTopBinding (StgTopStringLit _ _) =  do
+codegenTopBinding (StgTopStringLit _ _) =  do
   return []
   -- error $ "dont know how to generate string"
 
 
 stg2mlir :: Module -> GenM MLIRModule
 stg2mlir m = do 
-  bs <- mconcat <$>  forM (moduleTopBindings m)  translateTopBinding
-  -- b <- translateTopBinding $ moduleTopBindings m !! 0
+  bs <- mconcat <$>  forM (moduleTopBindings m)  codegenTopBinding
+  -- b <- codegenTopBinding $ moduleTopBindings m !! 0
   return $ MLIRModule bs
 
 modes :: Parser (IO ())

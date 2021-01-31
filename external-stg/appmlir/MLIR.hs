@@ -45,8 +45,9 @@ newtype Region = Region [Block]
 defaultRegion :: Region
 defaultRegion = Region []
 
+
 instance Pretty Region where
-  pretty (Region bs) = lbrace <+> nest 4 (vcat (map pretty bs)) <+> rbrace
+  pretty (Region bs) = lbrace <> nest 2 (line <> vcat (map pretty bs)) <> line <> rbrace
  
 -- generic-operation ::= string-literal `(` value-use-list? `)`  successor-list?
 --                       (`(` region-list `)`)? attribute-dict? `:` function-type
@@ -290,4 +291,4 @@ data MLIRModule = MLIRModule {
 }
 
 instance Pretty MLIRModule where
-  pretty (MLIRModule ops) = pretty "module {" <+> vcat (map pretty ops) <+> pretty "}"
+  pretty (MLIRModule ops) = pretty "module {" <> line <> vcat (map pretty ops) <> line <> pretty "}"
