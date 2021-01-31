@@ -153,7 +153,9 @@ forceop retid argid argty = MLIR.defaultop {
 codegenCaseScrutineeForce :: AltType
   -> SSAId -- scrutinee
   -> GenM ([Operation], SSAId)
-codegenCaseScrutineeForce PolyAlt argid = error $ "unknown alt type polyalt"
+-- | polyalt = type varible. I have no idea how to synthesize this,
+-- so let's just try to be dumb for now...
+codegenCaseScrutineeForce PolyAlt argid = return ([], argid)
 codegenCaseScrutineeForce (PrimAlt prim) argid = return ([], argid) 
 codegenCaseScrutineeForce (AlgAlt tycon) argid = do
   newid <- gensymSSAId
@@ -306,11 +308,14 @@ codegenRhsInner outid (StgRhsClosure updflags argbinders ebody) = do
 -- | let ...
 --    x = data constructor  <= binding
 --    y = lambda <= binding
-codegenInnerBinding :: Binding -> GenM ([Operation], SSAId)
+codegenInnerBinding :: Binding -> GenM ([Operation])
 codegenInnerBinding (StgNonRec lhs rhs) = do
   let lhsid = SSAId $ binder2String $ lhs
   rhsops <- codegenRhsInner lhsid rhs
-  return (rhsops , lhsid) 
+  return rhsops
+codegenInnerBinding (StgRec bindings) = do
+  ops <- mconcat <$> forM  bindings (\(n, rhs) -> codegenRhsInner (SSAId $ binder2String n) rhs)
+  return ops
 
 
 -- | convert to destination passing style, where caller tells you
@@ -364,11 +369,16 @@ codegenExpr (StgCase exprscrutinee  resultName altType altsDefaultFirst) = do
   -- we need to replace 'resultName' with the output of the case
 
 codegenExpr (StgLet binding body) = do
-  (bindingops, bindingval) <- codegenInnerBinding binding
+  -- (bindingops, bindingval) <- codegenInnerBinding binding
+  bindingops <- codegenInnerBinding binding
   (bodyops, bodyval) <- codegenExpr body
   return (bindingops <> bodyops, bodyval)
 
-codegenExpr (StgLetNoEscape binding body) = error $ "letNoEscape"
+codegenExpr (StgLetNoEscape binding body) = do
+  bindingops <- codegenInnerBinding binding
+  (bodyops, bodyval) <- codegenExpr body
+  return (bindingops <> bodyops, bodyval)
+
 codegenExpr e = error $ "unknown expression"
 
 codegenRhsToplevel :: String -> Rhs -> GenM [Operation]
