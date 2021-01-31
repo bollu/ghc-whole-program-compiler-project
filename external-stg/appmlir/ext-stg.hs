@@ -30,6 +30,8 @@ codegenPrimRep Int16Rep = TypeIntegerSignless 16
 codegenPrimRep Int32Rep = TypeIntegerSignless 32
 codegenPrimRep Int64Rep = TypeIntegerSignless 64
 codegenPrimRep IntRep = TypeIntegerSignless 64
+codegenPrimRep DoubleRep = TypeCustom "f64"
+codegenPrimRep FloatRep = TypeCustom "f32"
 codegenPrimRep LiftedRep = liftedreptype
 codegenPrimRep rep = error $ "unhandled primrep: " <> show rep
 
@@ -120,6 +122,10 @@ codegenLit (LitNumber LitNumInt i) = (AttributeInteger i, TypeIntegerSignless 64
 codegenLit (LitNumber LitNumInt64 i) = (AttributeInteger i, TypeIntegerSignless 64)
 codegenLit (LitNumber LitNumWord i) = error "unhandled literal"
 codegenLit (LitNumber LitNumWord64 i) = error "unhandled literal"
+codegenLit (LitDouble rat) = (AttributeFloat (fromRational rat), TypeCustom "f64")
+codegenLit (LitFloat rat) = (AttributeFloat (fromRational rat), TypeCustom "f32")
+codegenLit (LitFloat rat) = error "unhandled literal"
+codegenLit lit = error $ "unknown lit: |" <> show lit <> "|"
 
 codegenArg :: Arg -> GenM ([Operation], SSAId)
 codegenArg (StgVarArg vbinder) = return ([], SSAId $ binder2String vbinder)

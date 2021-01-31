@@ -127,6 +127,7 @@ instance Pretty AttributeDict where
 data AttributeValue = AttributeSymbolRef SymbolRefId | 
                       AttributeString String | 
                       AttributeInteger Integer | 
+                      AttributeFloat Double | 
                       AttributeType Type 
 
 attributeSymbolRef :: String -> AttributeValue
@@ -136,6 +137,7 @@ instance Pretty AttributeValue where
   pretty (AttributeSymbolRef x) = pretty x
   pretty (AttributeString x) = dquotes (pretty x)
   pretty (AttributeInteger x) = pretty x
+  pretty (AttributeFloat x) = pretty x
   pretty (AttributeType x) = pretty x
 
 -- operation         ::= op-result-list? (generic-operation | custom-operation)
