@@ -129,9 +129,9 @@ codegenLit (LitChar c) = (AttributeString (c:[]), TypeCustom "char")
 codegenLit lit = error $ "unknown lit: |" <> show lit <> "|"
 
 codegenArg :: Arg -> GenM ([Operation], SSAId)
-codegenArg (StgVarArg vbinder) = return ([], SSAId $ binder2String vbinder)
+codegenArg (StgVarArg vbinder) = fnref vbinder -- return ([], SSAId $ binder2String vbinder)
 codegenArg (StgLitArg l) = do
-  error $ "codegening lit arg:" <> show l
+  -- error $ "codegening lit arg:" <> show l
   newid <- gensymSSAId
   let (val, ty) = codegenLit l
   return ([constantop newid val ty], newid)
