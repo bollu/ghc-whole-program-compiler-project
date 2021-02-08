@@ -35,7 +35,7 @@ maybeParens True  = parens
 maybeParens False = id
 
 ppType :: Type -> Doc
-ppType t = red $ case t of
+ppType t = (if False then red else id) $ case t of
   SingleValue r   -> ppPrimRep r
   UnboxedTuple l  -> braces $ hsep (map ppPrimRep l)
   PolymorphicRep  -> text "PolymorphicRep"
@@ -49,8 +49,8 @@ colorBinderExport :: Binder -> Doc -> Doc
 colorBinderExport b = case binderScope b of
   LocalScope      -> id
   GlobalScope     -> id
-  HaskellExported -> green
-  ForeignExported -> ondullcyan . green
+  HaskellExported -> id -- green
+  ForeignExported -> id -- ondullcyan . green
 
 pprBinder :: Binder -> Doc
 pprBinder b = parens $ (colorBinderExport b . pretty . binderUniqueName $ b) <+> text ":" <+> ppType (binderType b) <+> parens (pretty $ binderTypeSig b) where

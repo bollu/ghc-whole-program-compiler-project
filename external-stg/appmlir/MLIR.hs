@@ -47,7 +47,7 @@ defaultRegion = Region []
 
 
 instance Pretty Region where
-  pretty (Region bs) = lbrace <> nest 2 (line <> vcat (map pretty bs)) <> line <> rbrace
+  pretty (Region bs) = lbrace <> nest 0 (line <> vcat (map pretty bs)) <> line <> rbrace
  
 -- generic-operation ::= string-literal `(` value-use-list? `)`  successor-list?
 --                       (`(` region-list `)`)? attribute-dict? `:` function-type
@@ -59,12 +59,9 @@ instance Pretty RegionList where
 
 data Block = Block BlockLabel [Operation]
 
-blankLine :: Doc ann
-blankLine = pretty "\n"
 
 instance Pretty Block where
-   pretty (Block label ops) = vcat (map pretty ops)
-     -- vcat (pretty label) (hang 2 (vcat $ blankLine:map pretty ops))
+   pretty (Block label ops) = (pretty label) <> nest 2 (line <> vcat (map pretty ops)) <> line
   
 -- block-label     ::= block-id block-arg-list? `:`
 data BlockLabel = BlockLabel BlockId BlockArgList

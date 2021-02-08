@@ -50,7 +50,7 @@ executable ext-stg
 executable ext-stg-mlir
   hs-source-dirs:      appmlir
   main-is:             ext-stg.hs
-  other-modules:       MLIR
+  other-modules:       MLIR, MLIRBuilder
   build-depends:       base < 5.0,
                        external-stg,
                        prettyprinter,

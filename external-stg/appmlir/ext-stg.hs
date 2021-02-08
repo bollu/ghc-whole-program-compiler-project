@@ -124,12 +124,14 @@ codegenLit (LitNumber LitNumWord i) = error "unhandled literal"
 codegenLit (LitNumber LitNumWord64 i) = error "unhandled literal"
 codegenLit (LitDouble rat) = (AttributeFloat (fromRational rat), TypeCustom "f64")
 codegenLit (LitFloat rat) = (AttributeFloat (fromRational rat), TypeCustom "f32")
-codegenLit (LitFloat rat) = error "unhandled literal"
+codegenLit (LitString s) = (AttributeString (BS8.unpack s), TypeCustom "string")
+codegenLit (LitChar c) = (AttributeString (c:[]), TypeCustom "char")
 codegenLit lit = error $ "unknown lit: |" <> show lit <> "|"
 
 codegenArg :: Arg -> GenM ([Operation], SSAId)
 codegenArg (StgVarArg vbinder) = return ([], SSAId $ binder2String vbinder)
 codegenArg (StgLitArg l) = do
+  error $ "codegening lit arg:" <> show l
   newid <- gensymSSAId
   let (val, ty) = codegenLit l
   return ([constantop newid val ty], newid)
@@ -302,7 +304,7 @@ codegenRhsInner outid (StgRhsClosure updflags argbinders ebody) = do
     opregions=RegionList [r],
     opresults=OpResultList [outid]
   }
-  return []
+  return [lam]
   -- return [lam]
 
 -- | let ...
@@ -381,10 +383,16 @@ codegenExpr (StgLetNoEscape binding body) = do
 
 codegenExpr e = error $ "unknown expression"
 
+--   "func"() ( {
+--   ^bb0(%arg0: i64, %arg1: i64):  // no predecessors
+--     "std.return"() : () -> ()
+--   }) {sym_name = "argEncoding", type = (i64, i64) -> ()} : () -> ()
+--  "module_terminator"() : () -> ()
 codegenRhsToplevel :: String -> Rhs -> GenM [Operation]
 codegenRhsToplevel name (StgRhsClosure updflag args exprbody) = do
   (ops, finalval) <- codegenExpr exprbody
-  let entry = block "entry"  [] (ops ++ [haskreturnop (finalval, lzvaluetype)])
+  let bbargs = [(SSAId . binder2String $ arg, codegenType . binderType $ arg) | arg <- args]
+  let entry = block "entry"  bbargs (ops ++ [haskreturnop (finalval, lzvaluetype)])
   let r = MLIR.Region [entry]
   -- let r = MLIR.Region []
   return $ [MLIR.defaultop { 
@@ -437,7 +445,7 @@ modes = subparser
         run fname = do
             dump <- Stg.IO.readModpakL fname modpakStgbinPath decodeStgbin
             let !(!mlir, _) = runGenM (stg2mlir dump) initGenMState
-            print $ "dumping module to MLIR!..." -- pprModule dump
+            -- print $ "dumping module to MLIR!..." -- pprModule dump
             print (pretty mlir)
 
 main :: IO ()
